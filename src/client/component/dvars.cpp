@@ -172,16 +172,14 @@ namespace dvars
 		{
 			const std::string path = get_config_file_path();
 
-			if (!utils::io::file_exists(path))
+			if (utils::io::file_exists(path))
 			{
-				initial_config_read = true;
-				return;
+				std::string filedata;
+				utils::io::read_file(path, &filedata);
+
+				game::Cbuf_ExecuteBuffer(0, game::ControllerIndex_t::CONTROLLER_INDEX_0, filedata.c_str());
 			}
 
-			std::string filedata;
-			utils::io::read_file(path, &filedata);
-
-			game::Cbuf_ExecuteBuffer(0, game::ControllerIndex_t::CONTROLLER_INDEX_0, filedata.c_str());
 			initial_config_read = true;
 			scheduler::execute(scheduler::pipeline::dvars_loaded);
 		}
