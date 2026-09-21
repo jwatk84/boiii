@@ -236,8 +236,7 @@ namespace party
 
 			scheduler::once([=]
 			{
-				if (workshop::check_valid_usermap_id(mapname, usermap_id, base_url) &&
-					workshop::check_valid_mod_id(mod_id))
+				if (workshop::check_required_content(mapname, usermap_id, mod_id, base_url))
 				{
 					if (is_connecting_to_dedi)
 					{

@@ -9,6 +9,7 @@
 
 #include "game/ui_scripting/execution.hpp"
 #include "ui_scripting.hpp"
+#include "workshop.hpp"
 
 #include <utils/concurrency.hpp>
 #include <utils/thread.hpp>
@@ -32,6 +33,7 @@ namespace ipc
 
 		std::atomic_bool stop_io{false};
 		std::atomic_bool force_resend{false};
+		std::atomic_bool launcher_connected{false};
 		std::thread io_thread;
 
 		utils::concurrency::container<std::deque<std::string>>& get_queue()
@@ -330,6 +332,10 @@ namespace ipc
 					const std::string owner = doc["presenceOwner"].GetString();
 					discord::set_launcher_presence_owner(owner == "launcher");
 				}
+				if (type == "hello-ack")
+				{
+					launcher_connected = true;
+				}
 			}
 			else if (type == "connect")
 			{
@@ -353,6 +359,14 @@ namespace ipc
 						+ (opened ? "true" : "false") + "}\n");
 					send_presence();
 				}, scheduler::main);
+			}
+			else if (type == "workshop-progress")
+			{
+				workshop::handle_install_progress(jstr(doc, "id"), jint(doc, "percent"));
+			}
+			else if (type == "workshop-result")
+			{
+				workshop::handle_install_result(jstr(doc, "id"), jbool(doc, "success"), jstr(doc, "error"));
 			}
 		}
 
@@ -457,6 +471,11 @@ namespace ipc
 				}
 
 				CloseHandle(pipe);
+				launcher_connected = false;
+				if (!stop_io)
+				{
+					workshop::handle_launcher_disconnect();
+				}
 				// Pipe lost: hand presence back to native RPC (debounced client-side) and drop the
 				// launcher-fed friends list (it would show stale online friends forever).
 				discord::set_launcher_presence_owner(false);
@@ -474,6 +493,38 @@ namespace ipc
 	void flush_presence()
 	{
 		scheduler::once(send_presence, scheduler::main);
+	}
+
+	bool request_workshop_install(const std::string& request_id, const std::vector<std::string>& item_ids)
+	{
+		if (!launcher_connected || request_id.empty() || item_ids.empty())
+		{
+			return false;
+		}
+
+		rapidjson::Document doc;
+		doc.SetObject();
+		auto& allocator = doc.GetAllocator();
+		doc.AddMember(rapidjson::StringRef("type"), rapidjson::StringRef("workshop-install"), allocator);
+
+		rapidjson::Value id;
+		id.SetString(request_id.data(), static_cast<rapidjson::SizeType>(request_id.size()), allocator);
+		doc.AddMember(rapidjson::StringRef("id"), id, allocator);
+
+		rapidjson::Value items(rapidjson::kArrayType);
+		for (const auto& item_id : item_ids)
+		{
+			rapidjson::Value item;
+			item.SetString(item_id.data(), static_cast<rapidjson::SizeType>(item_id.size()), allocator);
+			items.PushBack(item, allocator);
+		}
+		doc.AddMember(rapidjson::StringRef("items"), items, allocator);
+
+		rapidjson::StringBuffer buffer;
+		rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+		doc.Accept(writer);
+		send_message(std::string(buffer.GetString(), buffer.GetSize()));
+		return true;
 	}
 
 	class component final : public client_component

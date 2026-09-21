@@ -4,12 +4,16 @@
 
 #include "game/game.hpp"
 #include "game/utils.hpp"
+#include "game/ui_scripting/execution.hpp"
 #include "command.hpp"
 #include "fastdl.hpp"
+#include "ipc.hpp"
 #include "party.hpp"
 #include "scheduler.hpp"
+#include "ui_scripting.hpp"
 
 #include <utils/hook.hpp>
+#include <utils/concurrency.hpp>
 #include <utils/string.hpp>
 #include <utils/io.hpp>
 
@@ -19,6 +23,23 @@ namespace workshop
 	{
 		utils::hook::detour setup_server_map_hook;
 		utils::hook::detour load_usermap_hook;
+		std::atomic_uint install_sequence{0};
+
+		struct pending_install
+		{
+			std::string request_id;
+			std::string mapname;
+			std::string usermap_id;
+			std::string mod_id;
+			std::string base_url;
+			int displayed_percent{-5};
+		};
+
+		utils::concurrency::container<std::optional<pending_install>>& get_pending_install()
+		{
+			static utils::concurrency::container<std::optional<pending_install>> pending;
+			return pending;
+		}
 
 		bool has_mod(const std::string& pub_id)
 		{
@@ -360,6 +381,150 @@ namespace workshop
 		}
 
 		return true;
+	}
+
+	bool check_required_content(const std::string& mapname, const std::string& usermap_id,
+	                            const std::string& mod_id, const std::string& base_url)
+	{
+		if (mapname == "core_frontend")
+		{
+			return check_valid_usermap_id(mapname, usermap_id, base_url);
+		}
+
+		const auto missing_map = !usermap_id.empty() && !has_usermap(usermap_id);
+		const auto missing_mod = !mod_id.empty() && mod_id != "usermaps" && !has_mod(mod_id);
+		if (!missing_map && !missing_mod)
+		{
+			return check_valid_usermap_id(mapname, usermap_id, base_url) && check_valid_mod_id(mod_id);
+		}
+
+		const auto already_pending = get_pending_install().access<bool>([](const auto& pending)
+		{
+			return pending.has_value();
+		});
+		if (already_pending)
+		{
+			return false;
+		}
+
+		std::vector<std::string> item_ids{};
+		if (missing_map && utils::string::is_numeric(usermap_id))
+		{
+			item_ids.push_back(usermap_id);
+		}
+		if (missing_mod && utils::string::is_numeric(mod_id)
+			&& std::find(item_ids.begin(), item_ids.end(), mod_id) == item_ids.end())
+		{
+			item_ids.push_back(mod_id);
+		}
+
+		const auto can_request = (!missing_map || utils::string::is_numeric(usermap_id))
+			&& (!missing_mod || utils::string::is_numeric(mod_id));
+		const auto request_id = "boiii-workshop-" + std::to_string(++install_sequence);
+		if (can_request && !item_ids.empty())
+		{
+			get_pending_install().access([&](auto& pending)
+			{
+				pending = pending_install{request_id, mapname, usermap_id, mod_id, base_url};
+			});
+			if (ipc::request_workshop_install(request_id, item_ids))
+			{
+				ui_scripting::show_message_dialog("Workshop download", "Preparing required Workshop content...");
+				return false;
+			}
+			get_pending_install().access([](auto& pending) { pending.reset(); });
+		}
+
+		// Launcher absent or the server supplied a non-numeric id: retain the existing paths.
+		return check_valid_usermap_id(mapname, usermap_id, base_url) && check_valid_mod_id(mod_id);
+	}
+
+	void handle_install_progress(const std::string& request_id, const int percent)
+	{
+		const auto shown = get_pending_install().access<bool>([&](auto& pending)
+		{
+			if (!pending || pending->request_id != request_id)
+			{
+				return false;
+			}
+			const auto bucket = std::clamp(percent, 0, 100) / 5;
+			if (pending->displayed_percent / 5 == bucket)
+			{
+				return false;
+			}
+			pending->displayed_percent = bucket * 5;
+			return true;
+		});
+
+		if (shown)
+		{
+			scheduler::once([percent]
+			{
+				ui_scripting::show_message_dialog("Workshop download",
+					"Downloading required content... " + std::to_string(std::clamp(percent, 0, 100)) + "%");
+			}, scheduler::main);
+		}
+	}
+
+	void handle_install_result(const std::string& request_id, const bool success, const std::string& error)
+	{
+		std::optional<pending_install> completed{};
+		get_pending_install().access([&](auto& pending)
+		{
+			if (pending && pending->request_id == request_id)
+			{
+				completed = std::move(pending);
+				pending.reset();
+			}
+		});
+		if (!completed)
+		{
+			return;
+		}
+
+		scheduler::once([completed = std::move(*completed), success, error]
+		{
+			if (success)
+			{
+				ui_scripting::show_message_dialog("Workshop download", "Download complete. Joining server...");
+				game::reloadUserContent();
+				party::requery_current_server();
+				return;
+			}
+
+			printf("[ Workshop ] Launcher install failed: %s\n", error.data());
+			if (!check_valid_usermap_id(completed.mapname, completed.usermap_id, completed.base_url))
+			{
+				return;
+			}
+			check_valid_mod_id(completed.mod_id);
+		}, scheduler::main);
+	}
+
+	void handle_launcher_disconnect()
+	{
+		std::optional<pending_install> interrupted{};
+		get_pending_install().access([&](auto& pending)
+		{
+			if (pending)
+			{
+				interrupted = std::move(pending);
+				pending.reset();
+			}
+		});
+		if (!interrupted)
+		{
+			return;
+		}
+
+		scheduler::once([interrupted = std::move(*interrupted)]
+		{
+			if (!check_valid_usermap_id(interrupted.mapname, interrupted.usermap_id, interrupted.base_url))
+			{
+				return;
+			}
+			check_valid_mod_id(interrupted.mod_id);
+		}, scheduler::main);
 	}
 
 	void setup_same_mod_as_host(const std::string& usermap, const std::string& mod)
