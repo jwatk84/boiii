@@ -16,6 +16,12 @@ Thanks to all the original contributors.
 - **[Click here to get the latest release](https://github.com/CBServers/updater/raw/main/updater/boiii/boiii.exe)**
 - **You will need to drop this in your Call of Duty: Black Ops 3 folder. If you don't have Call of Duty: Black Ops 3, get those game files first.**
 - The client is still in an early stage. It will have bugs!
+
+### Dedicated-server sound
+
+Dedicated servers load and process sound banks needed by Zombies and custom-map scripts. A slim server install that does
+not include `zone/snd` can opt out with `-nosnd`; this preserves the original headless behavior without installing any of
+the sound-bank hooks.
   
 ## What is BOIII ☄️
 
