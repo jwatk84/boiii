@@ -49,10 +49,10 @@ namespace dedicated_vehicle
 #pragma pack(push, 1)
 		struct vehicle_path_position
 		{
-			std::byte pad_0000[0x2C];
+			std::byte pad_0000[0x28];
 			vec3 origin;
 			vec3 angles;
-			std::byte pad_0044[0x120];
+			std::byte pad_0040[0x124];
 		};
 
 		enum class vehicle_move_state : std::int32_t
@@ -117,8 +117,8 @@ namespace dedicated_vehicle
 #pragma pack(pop)
 
 		static_assert(sizeof(vehicle_path_position) == 0x164);
-		static_assert(offsetof(vehicle_path_position, origin) == 0x2C);
-		static_assert(offsetof(vehicle_path_position, angles) == 0x38);
+		static_assert(offsetof(vehicle_path_position, origin) == 0x28);
+		static_assert(offsetof(vehicle_path_position, angles) == 0x34);
 		static_assert(offsetof(vehicle, move_state) == 0x2F4);
 		static_assert(offsetof(vehicle, stopping) == 0x524);
 		static_assert(offsetof(vehicle_definition, type) == 0x8);
