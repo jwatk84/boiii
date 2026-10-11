@@ -2,6 +2,7 @@
 #include "loader/component_loader.hpp"
 
 #include "scheduler.hpp"
+#include "client_fps_limit.hpp"
 
 #include "game/game.hpp"
 
@@ -94,6 +95,7 @@ namespace scheduler
 		void r_end_frame_stub()
 		{
 			execute(pipeline::renderer);
+			client_fps_limit::before_renderer_frame();
 			r_end_frame_hook.invoke<void>();
 		}
 

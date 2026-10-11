@@ -3,6 +3,7 @@
 #include "game/game.hpp"
 
 #include "party.hpp"
+#include "client_fps_limit.hpp"
 #include "auth.hpp"
 #include "network.hpp"
 #include "scheduler.hpp"
@@ -55,20 +56,24 @@ namespace party
 		}
 
 		void connect_to_lobby(const game::netadr_t& addr, const std::string& mapname, const std::string& gamemode,
-		                      const std::string& usermap_id, const std::string& mod_id)
+		                      const std::string& usermap_id, const std::string& mod_id, const uint64_t generation)
 		{
+			if (!client_fps_limit::is_current_join(addr, generation)) return;
 			auth::clear_stored_guids();
 
 			workshop::setup_same_mod_as_host(usermap_id, mod_id);
 
 			game::XSESSION_INFO info{};
+			if (!client_fps_limit::prepare_native_join(addr, generation)) return;
 			game::CL_ConnectFromLobby(0, &info, &addr, 1, 0, mapname.data(), gamemode.data(), usermap_id.data());
+			client_fps_limit::observe_native_join_start(addr, generation);
 		}
 
-		void launch_mode(const game::eModes mode)
+		void launch_mode(const game::eModes mode, const game::netadr_t& addr, const uint64_t generation)
 		{
 			scheduler::once([=]
 			{
+				if (!client_fps_limit::is_current_join(addr, generation)) return;
 				const auto local_client = *reinterpret_cast<DWORD*>(0x14342155C_g);
 				const auto current_mode = game::Com_SessionMode_GetMode();
 				game::Com_SwitchMode(local_client, static_cast<game::eModes>(current_mode), mode, 6);
@@ -78,11 +83,12 @@ namespace party
 		void connect_to_lobby_with_mode(const game::netadr_t& addr, const game::eModes mode, const std::string& mapname,
 		                                const std::string& gametype, const std::string& usermap_id,
 		                                const std::string& mod_id,
-		                                const bool was_retried = false)
+		                                const uint64_t generation, const bool was_retried = false)
 		{
+			if (!client_fps_limit::is_current_join(addr, generation)) return;
 			if (game::Com_SessionMode_IsMode(mode))
 			{
-				connect_to_lobby(addr, mapname, gametype, usermap_id, mod_id);
+				connect_to_lobby(addr, mapname, gametype, usermap_id, mod_id, generation);
 				return;
 			}
 
@@ -90,10 +96,10 @@ namespace party
 			{
 				scheduler::once([=]
 				{
-					connect_to_lobby_with_mode(addr, mode, mapname, gametype, usermap_id, mod_id, true);
+					connect_to_lobby_with_mode(addr, mode, mapname, gametype, usermap_id, mod_id, generation, true);
 				}, scheduler::main, 5s);
 
-				launch_mode(mode);
+				launch_mode(mode, addr, generation);
 			}
 		}
 
@@ -167,9 +173,9 @@ namespace party
 		}
 
 		void handle_connect_query_response(const bool success, const game::netadr_t& target,
-		                                   const utils::info_string& info, uint32_t ping)
+		                                   const utils::info_string& info, uint32_t ping, const uint64_t generation)
 		{
-			if (!success)
+			if (!success || !client_fps_limit::is_current_join(target, generation))
 			{
 				return;
 			}
@@ -234,24 +240,37 @@ namespace party
 			const auto mode = static_cast<game::eModes>(std::atoi(playmode.data()));
 			//const auto xuid = strtoull(info.get("xuid").data(), nullptr, 16);
 
+			const auto fps_limit = info.get(client_fps_limit::info_key);
+			const auto dedicated = info.get("dedicated") == "1";
 			scheduler::once([=]
 			{
+				if (!client_fps_limit::is_current_join(target, generation)) return;
 				if (workshop::check_valid_usermap_id(mapname, usermap_id, base_url) &&
 					workshop::check_valid_mod_id(mod_id))
 				{
-					if (is_connecting_to_dedi)
+					client_fps_limit::accept_verified_join_info(target, generation, fps_limit, dedicated);
+					if (dedicated)
 					{
 						game::Com_SessionMode_SetGameMode(game::MODE_GAME_MATCHMAKING_PLAYLIST);
 					}
 
 					//connect_to_session(target, hostname, xuid, mode);
-					connect_to_lobby_with_mode(target, mode, mapname, gametype, usermap_id, mod_id);
+					connect_to_lobby_with_mode(target, mode, mapname, gametype, usermap_id, mod_id, generation);
 				}
 				else
 				{
 					cleanup_queried_servers();
 				}
 			}, scheduler::main);
+		}
+
+		void query_connect_server(const game::netadr_t& target, const uint64_t generation)
+		{
+			query_server(target, [generation](const bool success, const game::netadr_t& host,
+				const utils::info_string& info, const uint32_t ping)
+			{
+				handle_connect_query_response(success, host, info, ping, generation);
+			});
 		}
 
 		void connect_stub(const char* address)
@@ -289,7 +308,8 @@ namespace party
 			{
 				for (auto i = server_queries.begin(); i != server_queries.end(); ++i)
 				{
-					if (i->host == target && i->challenge == info.get("challenge"))
+					if (i->sent && !i->challenge.empty() &&
+						i->host == target && i->challenge == info.get("challenge"))
 					{
 						found_query = true;
 						query = std::move(*i);
@@ -319,7 +339,8 @@ namespace party
 
 		connect_host = target;
 		profile_infos::clear_profile_infos();
-		query_server(connect_host, handle_connect_query_response);
+		const auto generation = client_fps_limit::begin_join(target);
+		query_connect_server(connect_host, generation);
 	}
 
 	void cleanup_queried_servers()
@@ -380,7 +401,8 @@ namespace party
 		if (connect_host.type != game::NA_BAD)
 		{
 			profile_infos::clear_profile_infos();
-			query_server(connect_host, handle_connect_query_response);
+			const auto generation = client_fps_limit::begin_join(connect_host);
+			query_connect_server(connect_host, generation);
 		}
 	}
 
