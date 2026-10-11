@@ -16,6 +16,7 @@ concurrency:
 jobs:
   build:
     name: Build
+    if: github.ref != 'refs/heads/fps150-client-cap' && github.head_ref != 'fps150-client-cap'
     runs-on: windows-2022
     strategy:
       fail-fast: false

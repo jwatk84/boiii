@@ -5,6 +5,7 @@
 #include "steam/steam.hpp"
 
 #include "network.hpp"
+#include "client_fps_limit.hpp"
 #include "workshop.hpp"
 
 #include <utils/hook.hpp>
@@ -107,6 +108,10 @@ namespace getinfo
 				info.set("gamemode", std::to_string(game::Com_SessionMode_GetGameMode()));
 				info.set("sv_running", std::to_string(game::is_server_running()));
 				info.set("dedicated", game::is_server() ? "1" : "0");
+				if (game::is_server())
+				{
+					info.set(client_fps_limit::info_key, client_fps_limit::fixed_limit);
+				}
 				info.set("joinable", (game::is_server() || game::get_dvar_bool("nat_open")) ? "1" : "0");
 				info.set("hc", std::to_string(game::Com_GametypeSettings_GetUInt("hardcoremode", false)));
 				info.set("modName", workshop::get_mod_resized_name());
